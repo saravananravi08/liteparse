@@ -12,7 +12,7 @@
  * console.log(result.text);
  * ```
  */
-export { LiteParse } from "./core/parser.js";
+export { LiteParse, ParseOverrides } from "./core/parser.js";
 export { searchItems } from "./processing/searchItems.js";
 export type {
   LiteParseConfig,

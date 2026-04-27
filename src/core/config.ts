@@ -21,6 +21,7 @@ export const DEFAULT_CONFIG: LiteParseConfig = {
   preserveVerySmallText: false,
   preserveLayoutAlignmentAcrossPages: false,
   password: undefined,
+  pageChunkSize: 300,
 };
 
 export function mergeConfig(userConfig: Partial<LiteParseConfig>): LiteParseConfig {

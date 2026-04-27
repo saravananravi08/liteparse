@@ -55,6 +55,16 @@ import { cleanOcrTableArtifacts } from "../processing/textUtils.js";
  * const result = await parser.parse("scanned-document.pdf");
  * ```
  */
+/**
+ * Options that can override config defaults for a single parse call.
+ */
+export interface ParseOverrides {
+  /** Override pageChunkSize for this call. 0 = disabled. */
+  pageChunkSize?: number;
+  /** Override targetPages for this call (e.g., "1-5,10"). */
+  targetPages?: string;
+}
+
 export class LiteParse {
   private config: LiteParseConfig;
   private pdfEngine: PdfEngine;
@@ -84,6 +94,38 @@ export class LiteParse {
   }
 
   /**
+   * Get the number of pages in a document without doing any OCR or processing.
+   * Useful for determining whether to use chunking before calling parse().
+   *
+   * For non-PDF files, returns 0 or 1 depending on whether content was extracted.
+   */
+  async getPageCount(input: LiteParseInput): Promise<number> {
+    if (typeof input === "string") {
+      const conversionResult = await convertToPdf(input, this.config.password);
+      if ("code" in conversionResult) {
+        throw new Error(`Conversion failed: ${conversionResult.message}`);
+      }
+      if ("content" in conversionResult) {
+        return 1; // text-based format, single page equivalent
+      }
+      const doc = await this.pdfEngine.loadDocument(conversionResult.pdfPath, this.config.password);
+      const numPages = doc.numPages;
+      await this.pdfEngine.close(doc);
+      return numPages;
+    } else {
+      const ext = await guessExtensionFromBuffer(input);
+      if (ext === ".pdf") {
+        const data = input instanceof Uint8Array ? input : new Uint8Array(input);
+        const doc = await this.pdfEngine.loadDocument(data, this.config.password);
+        const numPages = doc.numPages;
+        await this.pdfEngine.close(doc);
+        return numPages;
+      }
+      return 1; // non-PDF buffer
+    }
+  }
+
+  /**
    * Parse a document and return the extracted text, page data, and optionally structured JSON.
    *
    * Supports PDFs natively. Non-PDF formats (DOCX, XLSX, images, etc.) are automatically
@@ -97,7 +139,7 @@ export class LiteParse {
    *
    * @throws Error if the file cannot be found, converted, or parsed.
    */
-  async parse(input: LiteParseInput, quiet = false): Promise<ParseResult> {
+  async parse(input: LiteParseInput, quiet = false, overrides?: ParseOverrides): Promise<ParseResult> {
     const log = (msg: string) => {
       if (!quiet) console.error(msg); // Progress goes to stderr
     };
@@ -157,12 +199,57 @@ export class LiteParse {
 
     log(`Loaded PDF with ${doc.numPages} pages`);
 
-    // Extract pages
-    const pages = await this.pdfEngine.extractAllPages(
-      doc,
-      this.config.maxPages,
-      this.config.targetPages
-    );
+    // Determine effective chunking settings
+    const effectiveChunkSize = overrides?.pageChunkSize ?? this.config.pageChunkSize;
+    const hasManualTargetPages = overrides?.targetPages !== undefined;
+    const shouldChunk =
+      effectiveChunkSize > 0 && doc.numPages > effectiveChunkSize && !hasManualTargetPages;
+
+    let pages: PageData[] = [];
+
+    if (shouldChunk) {
+      // Auto-chunking: process in sequential page ranges to prevent memory exhaustion
+      const totalPages = Math.min(doc.numPages, this.config.maxPages || doc.numPages);
+      let globalPageNum = 1;
+
+      log(`Processing ${totalPages} pages in ${effectiveChunkSize}-page chunks...`);
+
+      for (let start = 1; start <= totalPages; start += effectiveChunkSize) {
+        const end = Math.min(start + effectiveChunkSize - 1, totalPages);
+        const range = `${start}-${end}`;
+
+        log(`  Chunk ${range}...`);
+
+        // Terminate OCR engine before loading next chunk to free memory
+        if (this.ocrEngine?.terminate) {
+          await this.ocrEngine.terminate();
+        }
+
+        // Close current document
+        await this.pdfEngine.close(doc);
+
+        // Reload document for next chunk
+        doc = await this.reopenDocument(input, this.config.password);
+
+        // Extract this chunk's pages
+        const chunkPages = await this.pdfEngine.extractAllPages(doc, undefined, range);
+
+        // Renumber pages globally and collect
+        for (const page of chunkPages) {
+          page.pageNum = globalPageNum++;
+          pages.push(page);
+        }
+      }
+
+      log(`Finished chunked processing: ${pages.length} pages total`);
+    } else {
+      // Normal path: extract all at once
+      pages = await this.pdfEngine.extractAllPages(
+        doc,
+        this.config.maxPages,
+        overrides?.targetPages ?? this.config.targetPages
+      );
+    }
 
     // run BEFORE grid projection
     if (this.ocrEngine) {
@@ -443,5 +530,32 @@ export class LiteParse {
    */
   getConfig(): LiteParseConfig {
     return { ...this.config };
+  }
+
+  /**
+   * Reopen a document for the next processing chunk.
+   * Preserves the original input and handles both string paths and buffers.
+   */
+  private async reopenDocument(
+    input: LiteParseInput,
+    password?: string
+  ): Promise<PdfDocument> {
+    if (typeof input === "string") {
+      const conversionResult = await convertToPdf(input, password);
+      if ("code" in conversionResult) {
+        throw new Error(`Conversion failed: ${conversionResult.message}`);
+      }
+      if ("content" in conversionResult) {
+        throw new Error("Cannot reopen a text-based format document");
+      }
+      return this.pdfEngine.loadDocument(conversionResult.pdfPath, password);
+    } else {
+      const ext = await guessExtensionFromBuffer(input);
+      if (ext === ".pdf") {
+        const data = input instanceof Uint8Array ? input : new Uint8Array(input);
+        return this.pdfEngine.loadDocument(data, password);
+      }
+      throw new Error("Cannot reopen a non-PDF buffer for chunked processing");
+    }
   }
 }

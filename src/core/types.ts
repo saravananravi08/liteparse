@@ -136,6 +136,16 @@ export interface LiteParseConfig {
    * @defaultValue `undefined`
    */
   password?: string;
+
+  /**
+   * Auto-chunk large PDFs into batches of this many pages.
+   * When a PDF has more pages than this limit, it is processed in sequential
+   * chunks to prevent memory exhaustion in the PDFium WASM runtime.
+   * Set to 0 to disable chunking.
+   *
+   * @defaultValue `300`
+   */
+  pageChunkSize: number;
 }
 
 /**

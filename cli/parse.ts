@@ -23,6 +23,7 @@ interface ParseCommandOptions {
   numWorkers?: string;
   maxPages?: string;
   targetPages?: string;
+  pageChunkSize?: string;
   dpi?: string;
   preciseBbox?: boolean;
   preserveSmallText?: boolean;
@@ -78,6 +79,7 @@ program
   )
   .option("--max-pages <n>", "Max pages to parse", DEFAULT_MAX_PAGES.toString())
   .option("--target-pages <pages>", 'Target pages (e.g., "1-5,10,15-20")')
+  .option("--page-chunk-size <n>", "Page chunk size for large PDFs (0 to disable)")
   .option("--dpi <dpi>", "DPI for rendering", DEFAULT_DPI.toString())
   .option("--no-precise-bbox", "Disable precise bounding boxes")
   .option("--preserve-small-text", "Preserve very small text")
@@ -122,6 +124,7 @@ program
         numWorkers: parseInt(options.numWorkers || calculatedNumWorkers.toString()),
         maxPages: parseInt(options.maxPages || DEFAULT_MAX_PAGES.toString()),
         targetPages: options.targetPages,
+        pageChunkSize: parseInt(options.pageChunkSize || "0"),
         dpi: parseInt(options.dpi || DEFAULT_DPI.toString()),
         preciseBoundingBox: options.preciseBbox !== false,
         preserveVerySmallText: options.preserveSmallText || false,
@@ -130,6 +133,11 @@ program
 
       // Create parser
       const parser = new LiteParse(config);
+
+      // Build parse overrides (pageChunkSize can override config via args)
+      const parseOverrides = {
+        pageChunkSize: options.pageChunkSize ? parseInt(options.pageChunkSize) : undefined,
+      };
 
       // Read from stdin or file
       let input: string | Buffer;
@@ -148,7 +156,7 @@ program
       }
 
       // Parse document (quiet flag controls progress output)
-      const result = await parser.parse(input, quiet);
+      const result = await parser.parse(input, quiet, parseOverrides);
 
       // Format output based on format
       let output: string;
